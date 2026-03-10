@@ -33,6 +33,23 @@
 
 ---
 
+
+## 截图
+
+<p align="center">
+  <img src="screenshots/screenshot_chat.jpg" width="30%" alt="苏格拉底式对话引导" />
+  &nbsp;&nbsp;
+  <img src="screenshots/screenshot_report.jpg" width="30%" alt="家长报告" />
+  &nbsp;&nbsp;
+  <img src="screenshots/screenshot_settings.jpg" width="30%" alt="家长设置" />
+</p>
+
+<p align="center">
+  <em>左：苏格拉底式对话引导 &nbsp;|&nbsp; 中：家长使用报告 &nbsp;|&nbsp; 右：家长设置面板</em>
+</p>
+
+---
+
 ## 技术栈
 
 - **前端**：React + Vite
@@ -273,6 +290,23 @@ This is a decision made after real-world testing. Socratic guidance places high 
   - Learning analysis report (AI-generated, on demand)
 - **Child customization**: Tap the avatar to choose a character and background color
 - **Parent alert**: The AI only suggests involving a parent when it judges the child is genuinely stuck after a full explanation
+
+---
+
+
+## Screenshots
+
+<p align="center">
+  <img src="screenshots/screenshot_chat.jpg" width="30%" alt="Socratic guidance in action" />
+  &nbsp;&nbsp;
+  <img src="screenshots/screenshot_report.jpg" width="30%" alt="Parent report" />
+  &nbsp;&nbsp;
+  <img src="screenshots/screenshot_settings.jpg" width="30%" alt="Parent settings" />
+</p>
+
+<p align="center">
+  <em>Left: Socratic guidance in action &nbsp;|&nbsp; Center: Parent usage report &nbsp;|&nbsp; Right: Parent settings panel</em>
+</p>
 
 ---
 
