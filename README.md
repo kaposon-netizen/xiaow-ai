@@ -30,6 +30,9 @@
   - 阶段学习分析（AI 生成，按需触发）
 - **孩子自定义**：点击头像可选择形象和背景颜色
 - **找家长提示**：AI 判断孩子真正卡住后才提示寻求家长帮助
+- **长期记忆**：每次对话结束后自动生成摘要，记录孩子的话题、理解程度和兴趣信号，下次对话时小问自然融入，越用越了解孩子（孩子不可见）
+- **成长记录**：家长报告新增第三个 Tab，按日期展示所有 AI 生成的对话摘要，追踪孩子的学习轨迹
+- **奇阅魔方联动**：可接入孩子当前阅读的书目，小问在对话中自然关联
 
 ---
 
@@ -290,6 +293,9 @@ This is a decision made after real-world testing. Socratic guidance places high 
   - Learning analysis report (AI-generated, on demand)
 - **Child customization**: Tap the avatar to choose a character and background color
 - **Parent alert**: The AI only suggests involving a parent when it judges the child is genuinely stuck after a full explanation
+- **Long-term memory**: After each conversation, a short AI-generated summary is saved (topic, comprehension level, interest signals). Future conversations are silently informed by this history — the child never sees it, but Xiaowen gradually gets to know them
+- **Growth log**: A third tab in the parent report shows all AI-generated conversation summaries in reverse chronological order, tracking the child's learning journey over time
+- **Qiyue reading integration**: Optionally connect to the child's current book (title, author, chapter), allowing Xiaowen to naturally reference what they're reading
 
 ---
 
