@@ -2,6 +2,86 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 
+// ─── 长期记忆 ─────────────────────────────────────────────────────────────────
+const MEMORY_KEY = "xiaow_memory";
+const MAX_MEMORIES = 60;
+
+function loadMemories() {
+  try { const v = localStorage.getItem(MEMORY_KEY); return v ? JSON.parse(v) : []; }
+  catch { return []; }
+}
+function saveMemories(mems) {
+  try { localStorage.setItem(MEMORY_KEY, JSON.stringify(mems)); } catch {}
+}
+
+async function generateMemorySummary(apiKey, messages) {
+  const meaningful = messages.filter(m =>
+    !(m.role === "assistant" && (typeof m.content === "string") && m.content.startsWith("嗨！"))
+  );
+  if (meaningful.length < 4) return;
+  const dialogue = meaningful.slice(0, 20).map(m => {
+    const role = m.role === "user" ? "孩子" : "小问";
+    const text = typeof m.content === "string"
+      ? m.content : m.content?.find?.(c => c.type === "text")?.text || "[图片]";
+    return `${role}：${text.slice(0, 150)}`;
+  }).join("\n");
+  const sys = `你是学习记录助手。用80字以内总结这段孩子与AI的对话：话题是什么、孩子的理解程度、体现出的兴趣信号。纯文字，不用标题列表，像简短日记。直接输出。`;
+  try {
+    const isNative = typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.();
+    const url = isNative ? "https://api.anthropic.com/v1/messages" : "http://localhost:3001/api/chat";
+    let full = "";
+    if (isNative) {
+      const res = await fetch(url, {
+        method:"POST",
+        headers:{"Content-Type":"application/json","x-api-key":apiKey,
+          "anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+        body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:200,
+          system:sys,messages:[{role:"user",content:dialogue}]}),
+      });
+      const data = await res.json();
+      full = data.content?.[0]?.text || "";
+    } else {
+      const res = await fetch(url, {method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({apiKey,system:sys,messages:[{role:"user",content:dialogue}]})});
+      const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "";
+      while (true) {
+        const {done,value} = await reader.read(); if (done) break;
+        buf += dec.decode(value,{stream:true}); const lines = buf.split("\n"); buf = lines.pop()||"";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const d = line.slice(6).trim(); if (d==="[DONE]") continue;
+          try { const p=JSON.parse(d); if(p.type==="content_block_delta"&&p.delta?.text) full+=p.delta.text; } catch {}
+        }
+      }
+    }
+    if (!full || full.length < 10) return;
+    const mems = loadMemories();
+    mems.push({date:new Date().toISOString().slice(0,10),ts:Date.now(),summary:full.trim()});
+    if (mems.length > MAX_MEMORIES) mems.splice(0, mems.length - MAX_MEMORIES);
+    saveMemories(mems);
+  } catch(e) { console.log("Memory summary failed:", e.message); }
+}
+
+function buildMemoryContext() {
+  const mems = loadMemories();
+  if (mems.length === 0) return "";
+  const recent = mems.slice(-8);
+  const lines = recent.map(m => `[${m.date}] ${m.summary}`).join("\n");
+  return `\n\n## 你对这个孩子的了解（历史对话摘要，请自然融入，不要刻意提及）\n${lines}`;
+}
+
+// ─── 奇阅魔方联动：读取孩子最近读的书 ────────────────────────────────────────
+function getQiyueContext() {
+  try {
+    // 奇阅魔方存在 IndexedDB，这里读 localStorage 里的最近书名缓存
+    // 奇阅魔方需配合写入 qiyue_recent_book 这个 key
+    const v = localStorage.getItem("qiyue_recent_book");
+    if (!v) return "";
+    const {title, author, recentChapter} = JSON.parse(v);
+    return `\n\n## 孩子最近在读的书\n书名：${title}${author?`，作者：${author}`:""}${recentChapter?`，最近读到：${recentChapter}`:""}。\n如果孩子的问题和这本书有关，可以自然地关联上。`;
+  } catch { return ""; }
+}
+
 // ─── System Prompts ───────────────────────────────────────────────────────────
 const SYSTEM_PROMPTS = {
 
@@ -645,6 +725,7 @@ ${sessionTexts}
         <div style={{display:"flex",background:"#F1F5F9",borderRadius:12,padding:3,marginBottom:18,gap:3}}>
           <TabBtn id="log" label="📋 对话记录" />
           <TabBtn id="analysis" label="🧠 阶段分析" />
+          <TabBtn id="memory" label="🌱 成长记录" />
         </div>
 
         {/* 对话记录 Tab */}
@@ -779,7 +860,48 @@ ${sessionTexts}
             )}
           </div>
         )}
+
+        {/* 成长记录 Tab */}
+        {tab === "memory" && <MemoryTimeline />}
+
       </div>
+    </div>
+  );
+}
+
+// ─── Memory Timeline ──────────────────────────────────────────────────────────
+function MemoryTimeline() {
+  const memories = loadMemories().slice().reverse();
+  if (memories.length === 0) {
+    return (
+      <div style={{textAlign:"center",color:"#94a3b8",fontSize:14,padding:"40px 20px",lineHeight:2}}>
+        还没有记录。<br/>
+        孩子多和小问聊几次之后，<br/>
+        这里会自动出现他的成长轨迹。
+      </div>
+    );
+  }
+  const grouped = {};
+  for (const m of memories) {
+    if (!grouped[m.date]) grouped[m.date] = [];
+    grouped[m.date].push(m);
+  }
+  return (
+    <div>
+      <div style={{fontSize:12,color:"#94a3b8",marginBottom:16,lineHeight:1.6}}>
+        共 {memories.length} 条记录 · 由AI自动生成，孩子不可见
+      </div>
+      {Object.keys(grouped).sort().reverse().map(date => (
+        <div key={date} style={{marginBottom:20}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#94a3b8",marginBottom:8,letterSpacing:1}}>{date}</div>
+          {grouped[date].map((m,i) => (
+            <div key={i} style={{padding:"12px 14px",borderRadius:10,background:"#F8FAFC",
+              border:"1px solid #E2E8F0",fontSize:13,color:"#334155",lineHeight:1.7,marginBottom:8}}>
+              {m.summary}
+            </div>
+          ))}
+        </div>
+      ))}
     </div>
   );
 }
@@ -980,7 +1102,7 @@ export default function XiaowApp() {
       const fullText = await callClaude(settings.apiKey, apiMessages, (partial) => {
         const display = partial.startsWith("[新题目]") ? partial.slice(5).trimStart() : partial;
         setMessages([...newMessages, { role:"assistant", content: display.replace("[需要帮助]","").trimEnd() }]);
-      }, getSystemPrompt(settings.level) + SHARED_RULES);
+      }, getSystemPrompt(settings.level) + buildMemoryContext() + getQiyueContext() + SHARED_RULES);
 
       // 检测标记
       if (fullText.startsWith("[新题目]")) {
@@ -1016,6 +1138,9 @@ export default function XiaowApp() {
         allSessions.push({ date: today, name: sessionName, turns: sessionTurns.current, messages: finalMessages, needsHelp: fullText.includes("[需要帮助]") });
       }
       save(STORAGE_KEYS.sessions, allSessions.slice(-200));
+
+      // 静默生成记忆摘要（不阻塞UI）
+      generateMemorySummary(settings.apiKey, finalMessages).catch(()=>{});
 
     } catch(e) {
       setError(`请求失败：${e.message}`);
