@@ -2,79 +2,101 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 
-// ─── 长期记忆 ─────────────────────────────────────────────────────────────────
-const MEMORY_KEY = "xiaow_memory";
-const MAX_MEMORIES = 60;
+// ─── 月度成长报告 ────────────────────────────────────────────────────────────
+const MONTHLY_REPORTS_KEY = "xiaow_monthly_reports";
 
-function loadMemories() {
-  try { const v = localStorage.getItem(MEMORY_KEY); return v ? JSON.parse(v) : []; }
+function currentMonth() { return new Date().toISOString().slice(0, 7); }
+
+function loadMonthlyReports() {
+  try { const v = localStorage.getItem(MONTHLY_REPORTS_KEY); return v ? JSON.parse(v) : []; }
   catch { return []; }
 }
-function saveMemories(mems) {
-  try { localStorage.setItem(MEMORY_KEY, JSON.stringify(mems)); } catch {}
+function saveMonthlyReports(reports) {
+  try { localStorage.setItem(MONTHLY_REPORTS_KEY, JSON.stringify(reports)); } catch {}
 }
 
-async function generateMemorySummary(apiKey, messages) {
-  const meaningful = messages.filter(m =>
-    !(m.role === "assistant" && (typeof m.content === "string") && m.content.startsWith("嗨！"))
-  );
-  if (meaningful.length < 4) return;
-  const dialogue = meaningful.slice(0, 20).map(m => {
-    const role = m.role === "user" ? "孩子" : "小问";
-    const text = typeof m.content === "string"
-      ? m.content : m.content?.find?.(c => c.type === "text")?.text || "[图片]";
-    return `${role}：${text.slice(0, 150)}`;
-  }).join("\n");
-  const sys = `你是学习记录助手。用80字以内总结这段孩子与AI的对话：话题是什么、孩子的理解程度、体现出的兴趣信号。纯文字，不用标题列表，像简短日记。直接输出。`;
+async function generateMonthlyReport(apiKey, sessions, month) {
+  const monthSessions = sessions.filter(s => s.date && s.date.startsWith(month));
+  if (monthSessions.length === 0) return null;
+
+  // 上月报告（用于对比）
+  const reports = loadMonthlyReports();
+  const prevReport = reports.length > 0 ? reports[reports.length - 1] : null;
+  const hasPrev = prevReport && prevReport.month !== month;
+
+  const sessionTexts = monthSessions.map((s, i) => {
+    const msgs = (s.messages || [])
+      .filter(m => !(m.role === "assistant" && typeof m.content === "string" && m.content.startsWith("嗨！")))
+      .map(m => {
+        const text = typeof m.content === "string" ? m.content
+          : m.content?.find?.(c => c.type === "text")?.text ?? "[图片]";
+        return `${m.role === "user" ? "孩子" : "小问"}：${text.slice(0, 300)}`;
+      }).join("\n");
+    return `【${s.name}】${s.date}（${s.turns}轮）\n${msgs}`;
+  }).join("\n\n---\n\n");
+
+  const prevSection = hasPrev
+    ? `\n\n上月（${prevReport.month}）的分析报告摘要：\n${prevReport.report.slice(0, 500)}\n\n请在本月报告末尾加入与上月的对比。`
+    : "";
+
+  const totalTurns = monthSessions.reduce((s, r) => s + (r.turns || 0), 0);
+  const prompt = `以下是孩子${month}整月使用AI学习伙伴「小问」的对话记录（共${monthSessions.length}次对话，${totalTurns}轮）：
+
+${sessionTexts}${prevSection}
+
+请从家长视角生成月度成长报告，包含：
+
+1. **本月使用概况**（频率、活跃度、话题分布）
+2. **认知能力观察**（理解速度、独立思考程度、遇到困难时的反应方式）
+3. **兴趣与擅长领域**
+4. **薄弱环节**（反复卡住的知识点或思维模式）
+${hasPrev ? "5. **与上月对比**（进步点、仍需关注的点）\n6. **下月建议**（具体可操作）" : "5. **给家长的建议**（具体可操作）"}
+
+语言像专业老师写给家长的书面报告，客观具体，不超过600字。`;
+
   try {
     const isNative = typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.();
-    const url = isNative ? "https://api.anthropic.com/v1/messages" : "http://localhost:3001/api/chat";
-    let full = "";
+    let reportText = "";
     if (isNative) {
-      const res = await fetch(url, {
-        method:"POST",
-        headers:{"Content-Type":"application/json","x-api-key":apiKey,
-          "anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-        body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:200,
-          system:sys,messages:[{role:"user",content:dialogue}]}),
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+        body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 1200,
+          messages: [{ role: "user", content: prompt }] })
       });
       const data = await res.json();
-      full = data.content?.[0]?.text || "";
+      reportText = data.content?.[0]?.text || "";
     } else {
-      const res = await fetch(url, {method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({apiKey,system:sys,messages:[{role:"user",content:dialogue}]})});
-      const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "";
-      while (true) {
-        const {done,value} = await reader.read(); if (done) break;
-        buf += dec.decode(value,{stream:true}); const lines = buf.split("\n"); buf = lines.pop()||"";
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const d = line.slice(6).trim(); if (d==="[DONE]") continue;
-          try { const p=JSON.parse(d); if(p.type==="content_block_delta"&&p.delta?.text) full+=p.delta.text; } catch {}
-        }
-      }
+      const res = await fetch("http://localhost:3001/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey, messages: [{ role: "user", content: prompt }] })
+      });
+      const data = await res.json();
+      reportText = data.content?.[0]?.text || "";
     }
-    if (!full || full.length < 10) return;
-    const mems = loadMemories();
-    mems.push({date:new Date().toISOString().slice(0,10),ts:Date.now(),summary:full.trim()});
-    if (mems.length > MAX_MEMORIES) mems.splice(0, mems.length - MAX_MEMORIES);
-    saveMemories(mems);
-  } catch(e) { console.log("Memory summary failed:", e.message); }
-}
+    if (!reportText || reportText.length < 50) return null;
 
-function buildMemoryContext() {
-  const mems = loadMemories();
-  if (mems.length === 0) return "";
-  const recent = mems.slice(-8);
-  const lines = recent.map(m => `[${m.date}] ${m.summary}`).join("\n");
-  return `\n\n## 你对这个孩子的了解（历史对话摘要，请自然融入，不要刻意提及）\n${lines}`;
+    const report = {
+      month,
+      generatedAt: new Date().toISOString(),
+      report: reportText,
+      stats: { sessions: monthSessions.length, turns: totalTurns }
+    };
+    const existing = loadMonthlyReports();
+    const idx = existing.findIndex(r => r.month === month);
+    if (idx >= 0) existing[idx] = report;
+    else existing.push(report);
+    if (existing.length > 24) existing.splice(0, existing.length - 24);
+    saveMonthlyReports(existing);
+    return report;
+  } catch(e) { console.log("Monthly report failed:", e.message); return null; }
 }
 
 // ─── 奇阅魔方联动：读取孩子最近读的书 ────────────────────────────────────────
 function getQiyueContext() {
   try {
-    // 奇阅魔方存在 IndexedDB，这里读 localStorage 里的最近书名缓存
-    // 奇阅魔方需配合写入 qiyue_recent_book 这个 key
     const v = localStorage.getItem("qiyue_recent_book");
     if (!v) return "";
     const {title, author, recentChapter} = JSON.parse(v);
@@ -567,12 +589,58 @@ function SettingsPanel({ settings, onSave, onClose, onShowReport }) {
           保存
         </button>
 
-        <button onClick={()=>{ onSave(local); onShowReport(); }}
-          style={{width:"100%",padding:12,borderRadius:12,marginTop:10,
-            border:"1.5px solid #E2E8F0",background:"#F8FAFC",
-            color:"#475569",fontSize:14,fontWeight:700,cursor:"pointer"}}>
-          📊 查看使用报告
-        </button>
+        {(() => {
+          const reports = loadMonthlyReports();
+          const hasNewReport = reports.length > 0 &&
+            reports[reports.length-1].month === currentMonth() &&
+            new Date(reports[reports.length-1].generatedAt) > new Date(Date.now() - 7*24*3600*1000);
+          return (
+            <button onClick={()=>{ onSave(local); onShowReport(); }}
+              style={{width:"100%",padding:12,borderRadius:12,marginTop:10,
+                border:"1.5px solid #E2E8F0",background:"#F8FAFC",
+                color:"#475569",fontSize:14,fontWeight:700,cursor:"pointer",
+                position:"relative"}}>
+              📊 查看使用报告
+              {hasNewReport && (
+                <span style={{position:"absolute",top:8,right:12,width:8,height:8,
+                  borderRadius:"50%",background:"#EF4444",display:"inline-block"}} />
+              )}
+            </button>
+          );
+        })()}
+
+        {/* 关于 & 版本信息 */}
+        <div style={{marginTop:24,paddingTop:18,borderTop:"1px solid #F1F5F9"}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#94a3b8",marginBottom:12,
+            textTransform:"uppercase",letterSpacing:1}}>关于小问</div>
+          <div style={{padding:"14px 16px",borderRadius:12,background:"#F8FAFC",
+            border:"1px solid #F1F5F9",lineHeight:1.9}}>
+            <div style={{fontSize:13,color:"#334155",marginBottom:10}}>
+              小问是一个苏格拉底式 AI 学习辅导工具，专为 8-15 岁孩子设计。
+              它永远不直接给答案——通过反问和引导，帮孩子自己找到思路，培养独立思考的习惯。
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:7}}>
+              <a href="https://github.com/kaposon-netizen/xiaow-ai" target="_blank"
+                rel="noreferrer"
+                style={{fontSize:12,color:"#6366F1",textDecoration:"none",
+                  display:"flex",alignItems:"center",gap:6,fontWeight:600}}>
+                <span style={{fontSize:15}}>📦</span>
+                github.com/kaposon-netizen/xiaow-ai
+              </a>
+              <a href="https://slowsignal.me" target="_blank" rel="noreferrer"
+                style={{fontSize:12,color:"#6366F1",textDecoration:"none",
+                  display:"flex",alignItems:"center",gap:6,fontWeight:600}}>
+                <span style={{fontSize:15}}>🌐</span>
+                slowsignal.me
+              </a>
+            </div>
+          </div>
+          <div style={{marginTop:12,textAlign:"center",fontSize:11,color:"#c4cdd8",
+            letterSpacing:"0.04em"}}>
+            小问 v1.2.0 · MIT License · 个人实验项目
+          </div>
+        </div>
+
       </div>
     </div>
   );
@@ -594,7 +662,7 @@ function ReportPanel({ onClose, apiKey }) {
   const sessions = load(STORAGE_KEYS.sessions, []);
   const [tab, setTab] = useState("log"); // "log" | "analysis"
   const [expandedIdx, setExpandedIdx] = useState(null);
-  const [range, setRange] = useState("week"); // "week" | "month" | "all"
+  const [range, setRange] = useState("week"); // "week" | "half" | "month"
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState("");
   const [analysisError, setAnalysisError] = useState("");
@@ -606,11 +674,14 @@ function ReportPanel({ onClose, apiKey }) {
 
   // 按时间范围筛选 sessions
   const filteredSessions = sessions.filter(s => {
-    if (range === "all") return true;
     const now = new Date();
     const d = new Date(s.date);
     if (range === "week") {
       const cutoff = new Date(now); cutoff.setDate(now.getDate() - 7);
+      return d >= cutoff;
+    }
+    if (range === "half") {
+      const cutoff = new Date(now); cutoff.setDate(now.getDate() - 15);
       return d >= cutoff;
     }
     if (range === "month") {
@@ -629,7 +700,7 @@ function ReportPanel({ onClose, apiKey }) {
     // 构造对话摘要文本
     const sessionTexts = filteredSessions.map((s, i) => {
       const msgs = (s.messages || [])
-        .filter(m => m.role !== "assistant" || !m.content.startsWith("👋"))
+        .filter(m => m.role !== "assistant" || !(typeof m.content === "string" && m.content.startsWith("嗨！")))
         .map(m => {
           const text = typeof m.content === "string" ? m.content : m.content?.find?.(c=>c.type==="text")?.text ?? "[图片]";
           return `${m.role === "user" ? "孩子" : "小问"}：${text.slice(0, 200)}`;
@@ -637,7 +708,7 @@ function ReportPanel({ onClose, apiKey }) {
       return `【对话${i+1}】${s.date} ${s.needsHelp ? "（需要家长帮助）" : ""}\n题目：${s.name}\n${msgs}`;
     }).join("\n\n---\n\n");
 
-    const prompt = `以下是一个10岁小学生使用AI学习伙伴"小问"的对话记录（${range === "week" ? "最近7天" : range === "month" ? "最近30天" : "全部记录"}，共${filteredSessions.length}次对话）：
+    const prompt = `以下是孩子使用AI学习伙伴「小问」的对话记录（${range === "week" ? "最近7天" : range === "half" ? "最近15天" : "最近30天"}，共${filteredSessions.length}次对话）：
 
 ${sessionTexts}
 
@@ -683,13 +754,16 @@ ${sessionTexts}
     }
   };
 
-  const TabBtn = ({ id, label }) => (
+  const TabBtn = ({ id, label, dot }) => (
     <button onClick={() => setTab(id)}
       style={{flex:1, padding:"9px 0", borderRadius:10, border:"none", cursor:"pointer",
         fontWeight:700, fontSize:13, fontFamily:"'Nunito',sans-serif",
         background: tab === id ? "#6366F1" : "transparent",
-        color: tab === id ? "white" : "#94a3b8", transition:"all .15s"}}>
+        color: tab === id ? "white" : "#94a3b8", transition:"all .15s",
+        position:"relative"}}>
       {label}
+      {dot && <span style={{position:"absolute",top:6,right:10,width:7,height:7,
+        borderRadius:"50%",background:"#EF4444"}} />}
     </button>
   );
 
@@ -725,7 +799,11 @@ ${sessionTexts}
         <div style={{display:"flex",background:"#F1F5F9",borderRadius:12,padding:3,marginBottom:18,gap:3}}>
           <TabBtn id="log" label="📋 对话记录" />
           <TabBtn id="analysis" label="🧠 阶段分析" />
-          <TabBtn id="memory" label="🌱 成长记录" />
+          <TabBtn id="memory" label="🌱 成长记录" dot={(() => {
+            const rpts = loadMonthlyReports();
+            return rpts.length > 0 && rpts[rpts.length-1].month === currentMonth() &&
+              new Date(rpts[rpts.length-1].generatedAt) > new Date(Date.now() - 7*24*3600*1000);
+          })()} />
         </div>
 
         {/* 对话记录 Tab */}
@@ -817,7 +895,7 @@ ${sessionTexts}
             {/* Range selector */}
             <div style={{fontSize:12,fontWeight:700,color:"#64748b",marginBottom:8}}>分析时间范围</div>
             <div style={{display:"flex",gap:8,marginBottom:16}}>
-              {[{id:"week",label:"最近7天"},{id:"month",label:"最近30天"},{id:"all",label:"全部记录"}].map(r=>(
+              {[{id:"week",label:"最近7天"},{id:"half",label:"最近15天"},{id:"month",label:"最近30天"}].map(r=>(
                 <button key={r.id} onClick={()=>{ setRange(r.id); setAnalysisResult(""); }}
                   style={{flex:1,padding:"8px 0",borderRadius:10,cursor:"pointer",
                     fontWeight:700,fontSize:12,fontFamily:"'Nunito',sans-serif",
@@ -830,7 +908,7 @@ ${sessionTexts}
             </div>
 
             <div style={{fontSize:12,color:"#94a3b8",marginBottom:12}}>
-              该时段共 {filteredSessions.length} 次对话，
+              该时段共 {filteredSessions.length} 次对话，共 {filteredSessions.reduce((s,r)=>s+(r.turns||0),0)} 轮，
               其中 {filteredSessions.filter(s=>s.needsHelp).length} 次需要家长帮助
             </div>
 
@@ -862,45 +940,100 @@ ${sessionTexts}
         )}
 
         {/* 成长记录 Tab */}
-        {tab === "memory" && <MemoryTimeline />}
+        {tab === "memory" && <MonthlyReportPanel apiKey={apiKey} sessions={sessions} />}
 
       </div>
     </div>
   );
 }
 
-// ─── Memory Timeline ──────────────────────────────────────────────────────────
-function MemoryTimeline() {
-  const memories = loadMemories().slice().reverse();
-  if (memories.length === 0) {
-    return (
-      <div style={{textAlign:"center",color:"#94a3b8",fontSize:14,padding:"40px 20px",lineHeight:2}}>
-        还没有记录。<br/>
-        孩子多和小问聊几次之后，<br/>
-        这里会自动出现他的成长轨迹。
-      </div>
-    );
-  }
-  const grouped = {};
-  for (const m of memories) {
-    if (!grouped[m.date]) grouped[m.date] = [];
-    grouped[m.date].push(m);
-  }
+// ─── Monthly Report Panel ─────────────────────────────────────────────────────
+function MonthlyReportPanel({ apiKey, sessions }) {
+  const [reports, setReports] = useState(loadMonthlyReports);
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState("");
+  const month = currentMonth();
+  const thisMonthReport = reports.find(r => r.month === month);
+
+  // 打开时自动检查：本月还没有报告且有足够数据则自动生成
+  useEffect(() => {
+    if (!thisMonthReport && apiKey && sessions.filter(s => s.date?.startsWith(month)).length >= 3) {
+      handleGenerate();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleGenerate = async () => {
+    if (!apiKey) { setGenError("请先在设置里填入 API Key"); return; }
+    setGenerating(true); setGenError("");
+    const result = await generateMonthlyReport(apiKey, sessions, month);
+    if (result) {
+      setReports(loadMonthlyReports());
+    } else {
+      setGenError("生成失败，请稍后重试");
+    }
+    setGenerating(false);
+  };
+
   return (
     <div>
-      <div style={{fontSize:12,color:"#94a3b8",marginBottom:16,lineHeight:1.6}}>
-        共 {memories.length} 条记录 · 由AI自动生成，孩子不可见
+      <div style={{fontSize:12,color:"#94a3b8",marginBottom:14,lineHeight:1.6}}>
+        月度成长报告 · 由 AI 自动生成 · 每月一次 · 孩子不可见
       </div>
-      {Object.keys(grouped).sort().reverse().map(date => (
-        <div key={date} style={{marginBottom:20}}>
-          <div style={{fontSize:11,fontWeight:700,color:"#94a3b8",marginBottom:8,letterSpacing:1}}>{date}</div>
-          {grouped[date].map((m,i) => (
-            <div key={i} style={{padding:"12px 14px",borderRadius:10,background:"#F8FAFC",
-              border:"1px solid #E2E8F0",fontSize:13,color:"#334155",lineHeight:1.7,marginBottom:8}}>
-              {m.summary}
-            </div>
-          ))}
+
+      {/* 本月报告区 */}
+      <div style={{marginBottom:20}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+          <div style={{fontSize:13,fontWeight:800,color:"#1e293b"}}>{month} 月度报告</div>
+          <button onClick={handleGenerate} disabled={generating || !apiKey}
+            style={{padding:"5px 12px",borderRadius:8,border:"none",fontSize:12,fontWeight:700,
+              cursor:apiKey?"pointer":"not-allowed",fontFamily:"'Nunito',sans-serif",
+              background:apiKey?"linear-gradient(135deg,#6366F1,#8B5CF6)":"#E2E8F0",
+              color:apiKey?"white":"#94a3b8"}}>
+            {generating ? "生成中…" : thisMonthReport ? "重新生成" : "立即生成"}
+          </button>
         </div>
+        {genError && (
+          <div style={{padding:"8px 12px",borderRadius:8,background:"#FEF2F2",color:"#EF4444",fontSize:12,marginBottom:10}}>
+            {genError}
+          </div>
+        )}
+        {thisMonthReport ? (
+          <div style={{padding:"14px 16px",borderRadius:12,background:"#F8FAFC",
+            border:"1.5px solid #E2E8F0",fontSize:13,lineHeight:1.85,color:"#1e293b",
+            whiteSpace:"pre-wrap"}}>
+            <div style={{fontSize:11,color:"#94a3b8",marginBottom:8}}>
+              生成于 {thisMonthReport.generatedAt?.slice(0,10)} ·
+              基于 {thisMonthReport.stats?.sessions} 次对话 · {thisMonthReport.stats?.turns} 轮
+            </div>
+            {thisMonthReport.report}
+          </div>
+        ) : !generating && (
+          <div style={{textAlign:"center",color:"#94a3b8",fontSize:13,padding:"24px 0",lineHeight:2}}>
+            {sessions.filter(s=>s.date?.startsWith(month)).length < 3
+              ? `本月对话记录不足（当前 ${sessions.filter(s=>s.date?.startsWith(month)).length} 次），积累更多对话后再生成`
+              : "点击「立即生成」查看本月成长报告"}
+          </div>
+        )}
+      </div>
+
+      {/* 历史报告 */}
+      {reports.filter(r => r.month !== month).slice().reverse().map(r => (
+        <details key={r.month} style={{marginBottom:10,borderRadius:10,
+          border:"1px solid #E2E8F0",overflow:"hidden"}}>
+          <summary style={{padding:"10px 14px",cursor:"pointer",fontSize:13,
+            fontWeight:700,color:"#475569",background:"white",listStyle:"none",
+            display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span>{r.month} 月度报告</span>
+            <span style={{fontSize:11,color:"#94a3b8",fontWeight:400}}>
+              {r.stats?.sessions}次对话
+            </span>
+          </summary>
+          <div style={{padding:"12px 14px",background:"#F8FAFC",fontSize:13,
+            lineHeight:1.85,color:"#1e293b",whiteSpace:"pre-wrap",
+            borderTop:"1px solid #E2E8F0"}}>
+            {r.report}
+          </div>
+        </details>
       ))}
     </div>
   );
@@ -1003,10 +1136,34 @@ export default function XiaowApp() {
   const [showCustomize, setShowCustomize] = useState(false);
   const [pinModal, setPinModal] = useState(null); // {action, callback}
 
-  // Session tracking
-  const sessionStarted = useRef(false);
-  const sessionTurns = useRef(0);
+  // Session tracking - one question per record
+  const currentSession = useRef({
+    name: "", messages: [], turns: 0, needsHelp: false, date: "", started: false
+  });
   const [showParentHelp, setShowParentHelp] = useState(false);
+
+  const saveCurrentSession = () => {
+    const sess = currentSession.current;
+    if (!sess.started || sess.turns === 0) return;
+    const allSessions = load(STORAGE_KEYS.sessions, []);
+    allSessions.push({
+      date: sess.date, name: sess.name || "对话",
+      turns: sess.turns, messages: sess.messages, needsHelp: sess.needsHelp
+    });
+    save(STORAGE_KEYS.sessions, allSessions.slice(-200));
+  };
+
+  const startNewSession = (firstUserMsg) => {
+    const text = typeof firstUserMsg?.content === "string"
+      ? firstUserMsg.content
+      : firstUserMsg?.content?.find?.(c => c.type === "text")?.text ?? "对话";
+    currentSession.current = {
+      name: text.slice(0, 24),
+      messages: firstUserMsg ? [firstUserMsg] : [],
+      turns: 0, needsHelp: false,
+      date: todayKey(), started: true
+    };
+  };
   const bottomRef = useRef(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -1015,10 +1172,10 @@ export default function XiaowApp() {
   const bgTheme = BG_THEMES.find(t=>t.id===settings.bgTheme) || BG_THEMES[0];
   const hasKey = !!settings.apiKey;
 
-  // Init welcome message
+  // Init welcome message（只在首次挂载时执行，头像切换不重置对话）
   useEffect(() => {
     setMessages([WELCOME_MSG(owl)]);
-  }, [owl]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior:"smooth" });
@@ -1028,6 +1185,20 @@ export default function XiaowApp() {
   useEffect(() => {
     save(STORAGE_KEYS.settings, settings);
   }, [settings]);
+
+  // 启动时检查月度报告（有 key + 本月无报告 + 数据足够则静默生成）
+  useEffect(() => {
+    if (!settings.apiKey) return;
+    const month = currentMonth();
+    const reports = loadMonthlyReports();
+    const hasThisMonth = reports.some(r => r.month === month);
+    if (hasThisMonth) return;
+    const sessions = load(STORAGE_KEYS.sessions, []);
+    const monthSessions = sessions.filter(s => s.date?.startsWith(month));
+    if (monthSessions.length >= 3) {
+      generateMonthlyReport(settings.apiKey, sessions, month).catch(() => {});
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const requirePin = (action, callback) => {
     if (!settings.pin) { callback(); return; }
@@ -1058,9 +1229,8 @@ export default function XiaowApp() {
     if ((!text && !pendingImage) || loading || !hasKey) return;
     setError("");
 
-    // Track session start
-    if (!sessionStarted.current) {
-      sessionStarted.current = true;
+    // 首次发消息时记录 session 开始
+    if (!currentSession.current.started) {
       recordSession();
     }
 
@@ -1096,13 +1266,10 @@ export default function XiaowApp() {
     const apiMessages = newMessages.map(m => ({ role: m.role, content: m.content }));
 
     try {
-      // 先插入空占位消息
-      setMessages([...newMessages, { role:"assistant", content:"" }]);
-
       const fullText = await callClaude(settings.apiKey, apiMessages, (partial) => {
         const display = partial.startsWith("[新题目]") ? partial.slice(5).trimStart() : partial;
         setMessages([...newMessages, { role:"assistant", content: display.replace("[需要帮助]","").trimEnd() }]);
-      }, getSystemPrompt(settings.level) + buildMemoryContext() + getQiyueContext() + SHARED_RULES);
+      }, getSystemPrompt(settings.level) + getQiyueContext() + SHARED_RULES);
 
       // 检测标记
       if (fullText.startsWith("[新题目]")) {
@@ -1122,25 +1289,41 @@ export default function XiaowApp() {
       setMessages(finalMessages);
 
       // Record usage
-      sessionTurns.current += 1;
       recordUsage(1);
 
-      // Save session snapshot
-      const allSessions = load(STORAGE_KEYS.sessions, []);
-      const today = todayKey();
-      const lastIdx = allSessions.length - 1;
-      const firstUserMsg = finalMessages.find(m=>m.role==="user");
-      const sessionName = firstUserMsg?.content.slice(0,24) || "对话";
+      // 更新当前 session
+      const isNewTopic = fullText.startsWith("[新题目]");
+      if (isNewTopic && currentSession.current.started) {
+        // 保存上一个问题
+        saveCurrentSession();
+        // 开启新 session，首条用户消息作为标题
+        const lastUser = newMessages[newMessages.length - 1];
+        startNewSession(lastUser);
+      } else if (!currentSession.current.started) {
+        const lastUser = newMessages[newMessages.length - 1];
+        startNewSession(lastUser);
+      }
 
-      if (allSessions[lastIdx]?.date === today && sessionStarted.current) {
-        allSessions[lastIdx] = { ...allSessions[lastIdx], turns: sessionTurns.current, messages: finalMessages, needsHelp: allSessions[lastIdx].needsHelp || fullText.includes("[需要帮助]") };
+      // 追加助手回复到当前 session
+      currentSession.current.turns += 1;
+      currentSession.current.messages = finalMessages;
+      if (fullText.includes("[需要帮助]")) currentSession.current.needsHelp = true;
+
+      // 实时存档（防止 App 被强杀导致数据丢失）
+      const allSessions = load(STORAGE_KEYS.sessions, []);
+      const sess = currentSession.current;
+      const lastIdx = allSessions.length - 1;
+      const isSameSession = lastIdx >= 0
+        && allSessions[lastIdx].date === sess.date
+        && allSessions[lastIdx].name === sess.name;
+      if (isSameSession) {
+        allSessions[lastIdx] = { date: sess.date, name: sess.name, turns: sess.turns,
+          messages: sess.messages, needsHelp: sess.needsHelp };
       } else {
-        allSessions.push({ date: today, name: sessionName, turns: sessionTurns.current, messages: finalMessages, needsHelp: fullText.includes("[需要帮助]") });
+        allSessions.push({ date: sess.date, name: sess.name, turns: sess.turns,
+          messages: sess.messages, needsHelp: sess.needsHelp });
       }
       save(STORAGE_KEYS.sessions, allSessions.slice(-200));
-
-      // 静默生成记忆摘要（不阻塞UI）
-      generateMemorySummary(settings.apiKey, finalMessages).catch(()=>{});
 
     } catch(e) {
       setError(`请求失败：${e.message}`);
@@ -1155,8 +1338,9 @@ export default function XiaowApp() {
   };
 
   const clearChat = () => {
-    sessionStarted.current = false;
-    sessionTurns.current = 0;
+    // 存档当前 session 再清屏
+    saveCurrentSession();
+    currentSession.current = { name: "", messages: [], turns: 0, needsHelp: false, date: "", started: false };
     setShowParentHelp(false);
     setMessages([WELCOME_MSG(owl)]);
     setError("");
@@ -1299,7 +1483,7 @@ export default function XiaowApp() {
                 <Message msg={msg} owl={owl} />
               </div>
             ))}
-            {loading && messages[messages.length-1]?.content === "" && <TypingIndicator owl={owl} />}
+            {loading && (messages.length === 0 || messages[messages.length-1]?.role !== "assistant" || messages[messages.length-1]?.content === "") && <TypingIndicator owl={owl} />}
 
             {/* AI判断孩子需要家长帮助时显示 */}
             {showParentHelp && !loading && (

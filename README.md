@@ -26,12 +26,14 @@
 - **流式输出**：回复逐字显示，减少等待感
 - **家长控制面板**（PIN 锁保护）：
   - API Key 设置
-  - 对话记录查看（可展开每次对话）
-  - 阶段学习分析（AI 生成，按需触发）
+  - 对话记录（按问题独立存档，可展开查看完整过程）
+  - 阶段分析（7 / 15 / 30 天，手动生成）
+  - 月度成长报告（自动生成，含上月对比）
 - **孩子自定义**：点击头像可选择形象和背景颜色
 - **找家长提示**：AI 判断孩子真正卡住后才提示寻求家长帮助
-- **长期记忆**：每次对话结束后自动生成摘要，记录孩子的话题、理解程度和兴趣信号，下次对话时小问自然融入，越用越了解孩子（孩子不可见）
-- **成长记录**：家长报告新增第三个 Tab，按日期展示所有 AI 生成的对话摘要，追踪孩子的学习轨迹
+- **按问题保存对话**：每个问题独立成一条记录，而不是按天合并，家长可以清楚看到每次学习的完整过程
+- **月度成长报告**：每月自动生成一份成长分析，包含认知能力观察、薄弱环节、与上月对比，家长报告中「成长记录」Tab 查看
+- **阶段分析**：手动触发，支持 7 天 / 15 天 / 30 天三个时间范围
 - **奇阅魔方联动**：可接入孩子当前阅读的书目，小问在对话中自然关联
 
 ---
@@ -289,12 +291,14 @@ This is a decision made after real-world testing. Socratic guidance places high 
 - **Streaming output**: Replies appear character by character to reduce perceived wait time
 - **Parent control panel** (PIN-protected):
   - API Key configuration
-  - Conversation history (expandable per session)
-  - Learning analysis report (AI-generated, on demand)
+  - Conversation history (one record per question, expandable)
+  - Stage analysis (7 / 15 / 30 days, manually triggered)
+  - Monthly growth report (auto-generated, includes comparison with previous month)
 - **Child customization**: Tap the avatar to choose a character and background color
 - **Parent alert**: The AI only suggests involving a parent when it judges the child is genuinely stuck after a full explanation
-- **Long-term memory**: After each conversation, a short AI-generated summary is saved (topic, comprehension level, interest signals). Future conversations are silently informed by this history — the child never sees it, but Xiaowen gradually gets to know them
-- **Growth log**: A third tab in the parent report shows all AI-generated conversation summaries in reverse chronological order, tracking the child's learning journey over time
+- **Per-question conversation records**: Each question is saved as a separate record (not merged by day), so parents can review the full learning process for each topic
+- **Monthly growth report**: Auto-generated once a month — covers cognitive observations, weak areas, and comparison with the previous month. Viewable in the "Growth Log" tab of the parent report
+- **Stage analysis**: Manually triggered, supports 7 / 15 / 30-day time ranges
 - **Qiyue reading integration**: Optionally connect to the child's current book (title, author, chapter), allowing Xiaowen to naturally reference what they're reading
 
 ---
